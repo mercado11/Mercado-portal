@@ -1,0 +1,19 @@
+{
+  "name": "mercado-backend",
+  "version": "1.0.0",
+  "description": "Backend MERCADO : email de vérification, notifications, commandes WhatsApp/Telegram, paiement par carte via Flutterwave.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "nodemailer": "^6.9.14",
+    "twilio": "^5.2.2"
+  }
+}
