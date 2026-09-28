@@ -5644,4 +5644,918 @@ Autres
 </button>
 
 <button
-onclick="shareN
+onclick="shareNative()">
+<span>✉️</span>
+Email
+</button>
+
+<button
+onclick="copyCurrentLink()">
+<span>🔗</span>
+Copier le lien
+</button>
+
+</div>
+
+</div>
+
+`;
+
+document.body.appendChild(box);
+
+}
+
+box.classList.add("show");
+
+}
+
+function closeShareModal(){
+
+document
+.getElementById("shareModal")
+?.classList.remove("show");
+
+}
+
+async function copyCurrentLink(){
+
+try{
+
+await navigator.clipboard.writeText(
+location.href
+);
+
+showToast("Lien copié");
+
+}
+catch(e){
+
+showToast(
+"Copie indisponible"
+);
+
+}
+
+}
+
+/* =====================================================
+   PAY DIRECT (checkout for just this product)
+===================================================== */
+
+function payDirect(){
+
+if(!current)
+return;
+
+let existing=
+cart.find(
+x=>String(x.id)===String(current.id)
+);
+
+if(existing)
+existing.qty=qty;
+
+else
+cart.push({
+...current,
+qty:qty
+});
+
+updateCart();
+
+show('signup');
+
+}
+
+/* =====================================================
+   CAMERA
+===================================================== */
+
+let cameraStream=null;
+
+async function openPhotoMenu(){
+
+photoMenu.classList.add('show');
+
+cameraFallbackNotice.style.display='none';
+
+cameraVideo.style.display='block';
+
+/* Les navigateurs intégrés (ouverture du lien depuis Messenger,
+Facebook, Instagram...) bloquent très souvent la caméra ET la
+galerie, sans qu'aucun code ne puisse le contourner. On le
+détecte et on prévient clairement plutôt que de laisser
+l'utilisateur croire à un bug silencieux. */
+let ua=navigator.userAgent||'';
+let inAppBrowser=
+/FBAN|FBAV|Instagram|Messenger|Line\//i.test(ua);
+
+if(inAppBrowser){
+
+cameraVideo.style.display='none';
+
+cameraFallbackNotice.style.display='block';
+
+cameraFallbackNotice.innerHTML=
+"📷 La caméra et parfois la galerie ne fonctionnent pas correctement "+
+"depuis le navigateur intégré de Messenger/Facebook/Instagram. "+
+'Touchez le menu "⋯" en haut à droite puis <b>« Ouvrir dans le navigateur »</b> '+
+"pour un fonctionnement garanti.";
+
+return;
+
+}
+
+if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+
+cameraVideo.style.display='none';
+
+cameraFallbackNotice.style.display='block';
+
+return;
+
+}
+
+/* Dans certaines applications (navigateur intégré à Messenger,
+Facebook, Instagram...), l'accès direct à la caméra est bloqué
+ou reste bloqué en attente sans jamais répondre. On limite donc
+l'attente à 4 secondes puis on bascule automatiquement sur le
+bouton "Prendre une photo", qui utilise l'appareil photo natif
+du téléphone et fonctionne presque partout. */
+let timedOut=false;
+
+let timeoutId=setTimeout(()=>{
+
+timedOut=true;
+
+cameraVideo.style.display='none';
+
+cameraFallbackNotice.style.display='block';
+
+},4000);
+
+try{
+
+cameraStream=
+await navigator.mediaDevices.getUserMedia({
+
+video:{
+facingMode:{
+ideal:'environment'
+}
+},
+
+audio:false
+
+});
+
+clearTimeout(timeoutId);
+
+if(timedOut){
+
+// L'utilisateur a déjà basculé sur le mode natif : on arrête
+// simplement le flux obtenu trop tard, sans rouvrir l'aperçu.
+cameraStream.getTracks().forEach(t=>t.stop());
+cameraStream=null;
+return;
+
+}
+
+cameraVideo.srcObject=
+cameraStream;
+
+}
+catch(e){
+
+clearTimeout(timeoutId);
+
+cameraVideo.style.display='none';
+
+cameraFallbackNotice.style.display='block';
+
+showToast('Aperçu caméra indisponible ici — utilisez "Prendre une photo"');
+
+}
+
+}
+
+function closePhotoMenu(){
+
+if(cameraStream){
+
+cameraStream
+.getTracks()
+.forEach(
+t=>t.stop()
+);
+
+cameraStream=null;
+
+}
+
+photoMenu.classList.remove('show');
+
+}
+
+function useCamera(){
+
+openPhotoMenu();
+
+}
+
+function useGallery(){
+
+let ua=navigator.userAgent||'';
+
+if(/FBAN|FBAV|Instagram|Messenger|Line\//i.test(ua)){
+
+showToast('Galerie limitée dans ce navigateur intégré — touchez "⋯" puis "Ouvrir dans le navigateur" pour un accès garanti.');
+
+}
+
+try{
+
+galleryInput.value='';
+
+galleryInput.click();
+
+}
+catch(e){
+
+showToast("Impossible d'ouvrir la galerie ici — réessayez ou utilisez la caméra.");
+
+}
+
+}
+
+function captureCamera(){
+
+if(!cameraStream||!cameraVideo.videoWidth){
+
+cameraInput.click();
+
+return;
+
+}
+
+cameraCanvas.width=
+cameraVideo.videoWidth;
+
+cameraCanvas.height=
+cameraVideo.videoHeight;
+
+cameraCanvas
+.getContext('2d')
+.drawImage(
+cameraVideo,
+0,
+0
+);
+
+photoPickedData(
+cameraCanvas.toDataURL(
+'image/jpeg',
+.9
+)
+);
+
+closePhotoMenu();
+
+}
+
+function photoPicked(e){
+
+let f=
+e.target.files?.[0];
+
+if(!f)
+return;
+
+let r=
+new FileReader();
+
+r.onload=
+ev=>{
+closePhotoMenu();
+photoPickedData(
+ev.target.result
+);
+};
+
+r.readAsDataURL(f);
+
+}
+
+function photoPickedData(img){
+
+photoPreview.innerHTML=`
+
+<img
+src="${img}"
+alt="Photo">
+
+<p
+style="font-size:11px;color:var(--dim)">
+
+Photo prête pour la recherche visuelle MERCADO.
+
+</p>
+
+<button
+class="primary"
+onclick="runVisualSearch()">
+
+🔍 Rechercher cette image
+
+</button>
+
+<button
+class="btn btn-view"
+style="width:100%;margin-top:7px"
+onclick="photoPreview.classList.remove('show')">
+
+Fermer
+
+</button>
+
+`;
+
+photoPreview.classList.add('show');
+
+}
+
+async function runVisualSearch(){
+
+if(!MERCADO_CONFIG.visualSearchEndpoint){
+
+showToast(
+"Recherche visuelle prête — connectez votre API visuelle."
+);
+
+return;
+
+}
+
+let img=
+photoPreview
+.querySelector('img')
+?.src;
+
+try{
+
+let r=
+await fetch(
+MERCADO_CONFIG.visualSearchEndpoint,
+{
+method:'POST',
+headers:{
+'Content-Type':
+'application/json'
+},
+body:JSON.stringify({
+
+imageDataUrl:img,
+
+country:country.value,
+
+language:lang.value
+
+})
+}
+);
+
+let d=await r.json();
+
+PRODUCTS=
+d.items||
+d.products||
+[];
+
+render(PRODUCTS);
+
+photoPreview.classList.remove(
+'show'
+);
+
+show('home');
+
+}
+catch(e){
+
+showToast(
+"Recherche visuelle indisponible"
+);
+
+}
+
+}
+
+/* =====================================================
+   MERCADO AI DEEP
+===================================================== */
+
+let aiOpen=false;
+
+if(aiInput){
+
+aiInput.addEventListener('focus',()=>{
+
+setTimeout(()=>{
+
+aiInput.scrollIntoView({block:'center',behavior:'smooth'});
+
+},250);
+
+});
+
+}
+
+function toggleAI(){
+
+aiOpen=!aiOpen;
+
+aiBox.classList.toggle(
+'show',
+aiOpen
+);
+
+if(
+aiOpen&&
+!aiMsg.children.length
+)
+welcomeAI();
+
+updateAIContext();
+
+}
+
+function welcomeAI(){
+
+aiMsg.innerHTML=`
+
+<div class="msg bot">
+
+Bonjour 👋 Je suis MERCADO AI.
+
+Je peux répondre à deux types de questions :
+
+🛍️ Sur MERCADO : analyse d'un produit, prix, livraison, comparaison, paiement, votre commande...
+🌍 En dehors de MERCADO : posez-moi n'importe quelle question générale, comme un assistant classique.
+
+Dites-moi simplement ce dont vous avez besoin.
+
+</div>
+
+`;
+
+}
+
+function updateAIContext(){
+
+aiGrounding.innerHTML=`
+
+<span class="ground-chip">
+
+Produit:
+${current
+?escapeHTML(current.name).slice(0,28)
+:'aucun'}
+
+</span>
+
+<span class="ground-chip">
+
+Prix:
+${current
+?'€'+Number(current.price||0).toFixed(2)
+:'—'}
+
+</span>
+
+<span class="ground-chip">
+
+Pays:
+${country.value}
+
+</span>
+
+<span class="ground-chip">
+
+Catalogue:
+${PRODUCTS.length}
+
+</span>
+
+`;
+
+aiInput.placeholder=
+current
+?'Question sur '+current.name+'…'
+:'Posez votre question à MERCADO AI…';
+
+}
+
+function askAI(p){
+
+let q=
+(p||
+aiInput.value)
+.trim();
+
+if(!q)
+return;
+
+addAI(
+'user',
+q
+);
+
+aiInput.value='';
+
+setTimeout(
+()=>deepAI(q),
+220
+);
+
+}
+
+function addAI(role,t){
+
+let d=
+document.createElement('div');
+
+d.className=
+'msg '+role;
+
+d.textContent=t;
+
+aiMsg.appendChild(d);
+
+aiMsg.scrollTop=
+aiMsg.scrollHeight;
+
+}
+
+/* =====================================================
+   IA PROFONDE + ENDPOINT
+===================================================== */
+
+let aiConversation=[];
+
+async function deepAI(q){
+
+addAI(
+'bot',
+'…'
+);
+
+aiConversation.push({role:'user',content:q});
+
+/* MERCADO AI fonctionne comme un assistant général (type "mini
+Meta AI") : il répond aussi bien aux questions sur un produit /
+une commande MERCADO qu'à n'importe quelle question hors-site.
+Tout part vers le backend (/api/ai), qui appelle un vrai modèle
+de langage — la clé API reste côté serveur (Render). */
+
+if(MERCADO_CONFIG.aiEndpoint){
+
+try{
+
+let r=
+await fetch(
+MERCADO_CONFIG.aiEndpoint,
+{
+method:'POST',
+headers:{
+'Content-Type':
+'application/json'
+},
+body:JSON.stringify({
+
+question:q,
+
+history:aiConversation.slice(-10),
+
+product:current||null,
+
+quantity:current?qty:null,
+
+country:country.value,
+
+language:lang.value,
+
+context:{
+catalogSize:
+PRODUCTS.length
+}
+
+})
+}
+);
+
+let d=
+await r.json();
+
+if(
+r.ok&&
+d.answer
+){
+
+aiMsg.lastChild.remove();
+
+addAI(
+'bot',
+d.answer
+);
+
+aiConversation.push({role:'assistant',content:d.answer});
+
+return;
+
+}
+
+console.warn('MERCADO AI error:',d.error||r.status);
+
+}
+catch(e){
+
+console.warn('MERCADO AI fetch failed:',e);
+
+}
+
+}
+
+aiMsg.lastChild.remove();
+
+let answer=localAI(q);
+
+addAI(
+'bot',
+answer
+);
+
+aiConversation.push({role:'assistant',content:answer});
+
+/* On journalise silencieusement la question côté backend
+(sans jamais informer le client que l'IA générale n'est pas
+connectée), pour que vous restiez informé(e) de ce qui est
+demandé. */
+if(MERCADO_CONFIG.aiLogEndpoint){
+
+fetch(MERCADO_CONFIG.aiLogEndpoint,{
+method:'POST',
+headers:{'Content-Type':'application/json'},
+body:JSON.stringify({
+question:q,
+product:current?{name:current.name,price:current.price}:null,
+customer:{email:(email&&email.value)||''},
+country:country.value,
+language:lang.value
+})
+}).catch(()=>{});
+
+}
+
+}
+
+/* =====================================================
+   MOTEUR LOCAL "INTELLIGENT" — SANS AUCUNE API IA
+   Utilisé automatiquement si aucun backend IA n'est
+   connecté (ou s'il ne répond pas). Comprend le type de
+   question posée et répond avec les vraies données du
+   site (produit ouvert, panier, catalogue, pays, moyens
+   de paiement) plutôt qu'un texte figé toujours identique.
+===================================================== */
+
+function localAI(q){
+
+let l=q.toLowerCase().trim();
+
+// 1) Salutations / politesse
+if(/^(salut|bonjour|bonsoir|hello|hi|hey|coucou)\b/.test(l)){
+return "Bonjour 👋 Je peux répondre sur un produit, votre panier, la livraison, le paiement, ou faire un petit calcul. Que voulez-vous savoir ?";
+}
+if(/merci/.test(l)){
+return "Avec plaisir 🙂 Autre chose ?";
+}
+
+// 2) Calcul mathématique simple ("2+2", "combien font 15*3", etc.)
+let mathExpr=l
+.replace(/combien (fait|font|coûte|coûtent)/g,'')
+.replace(/[^0-9+\-*/.,() ]/g,'')
+.replace(/,/g,'.')
+.trim();
+if(mathExpr && /[0-9]/.test(mathExpr) && /[+\-*/]/.test(mathExpr) && /^[0-9+\-*/.() ]+$/.test(mathExpr)){
+try{
+// eslint-disable-next-line no-new-func
+let val=Function('"use strict";return ('+mathExpr+')')();
+if(typeof val==='number' && isFinite(val)){
+return "= "+ (Math.round(val*10000)/10000);
+}
+}catch(e){}
+}
+
+// 3) Date / heure
+if(/quelle (heure|date)|quel jour/.test(l)){
+let now=new Date();
+return "Nous sommes le "+now.toLocaleDateString(lang.value||'fr-FR')+
+", il est "+now.toLocaleTimeString(lang.value||'fr-FR',{hour:'2-digit',minute:'2-digit'})+
+" (heure de votre appareil).";
+}
+
+// 4) Panier / commande
+if(/panier|mon commande|ma commande|total/.test(l)){
+if(!cart.length)
+return "Votre panier MERCADO est vide pour le moment.";
+let total=cart.reduce((s,p)=>s+p.price*p.qty,0).toFixed(2);
+let lines=cart.map(p=>`• ${p.name} — €${Number(p.price).toFixed(2)} x${p.qty}`).join('\n');
+return `Votre panier contient ${cart.length} article(s) :\n${lines}\n\nTotal : €${total}`;
+}
+
+// 5) Paiement
+if(/paiement|payer|carte|bancaire|flutterwave|apple pay|google pay/.test(l)){
+return "MERCADO propose le paiement par carte bancaire, Apple Pay ou Google Pay, via une redirection sécurisée. Choisissez votre méthode dans le panier avant de valider.";
+}
+
+// 6) Livraison
+if(/livraison|shipping|délai|expédition/.test(l)){
+let c=country.options[country.selectedIndex]?.text||country.value;
+return current
+?`Pour "${current.name}", la livraison dépend du vendeur et de votre pays (${c}). ${current.shipping?('Info catalogue : '+current.shipping+'.'):"Le délai exact n'est pas fourni dans le catalogue actuel."}`
+:`La livraison dépend du vendeur et de votre pays (actuellement ${c}). Ouvrez un produit pour voir ses informations de livraison si disponibles.`;
+}
+
+// 7) Avis / comment laisser un avis
+if(/avis|review|commentaire/.test(l)){
+if(current)
+return `Vous pouvez laisser votre avis directement sous "${current.name}" — notez de 1 à 5 étoiles et ajoutez un commentaire, il sera visible par tous les visiteurs.`;
+return "Ouvrez un produit puis faites défiler jusqu'à la section avis pour en laisser un ou lire ceux des autres clients.";
+}
+
+// 7bis) Produit ouvert : prix / note / description / stock
+if(current){
+
+if(/prix|coût|coute|combien.*(coûte|vaut)/.test(l)){
+return `${current.name} coûte €${Number(current.price||0).toFixed(2)}.`;
+}
+if(/note|avis|rating|étoile/.test(l)){
+return current.rating
+?`${current.name} a une note de ${current.rating}${current.sold?(' pour '+current.sold+' ventes'):''}.`
+:`Aucune note n'est fournie pour ${current.name} dans le catalogue actuel.`;
+}
+if(/description|caractéristique|c'est quoi|qu'est-ce/.test(l)){
+return current.desc||`Aucune description détaillée n'est fournie pour ${current.name}.`;
+}
+if(/qualité.*prix|value|worth/.test(l)){
+return `À €${Number(current.price||0).toFixed(2)}${current.rating?(' et une note de '+current.rating):''}, le rapport qualité/prix semble correct sur la base des données disponibles — mais je ne peux pas le garantir sans les caractéristiques complètes du vendeur.`;
+}
+if(/compar/.test(l)){
+let alts=PRODUCTS
+.filter(p=>p.id!==current.id&&p.cat===current.cat)
+.sort((a,b)=>(b.rating||0)-(a.rating||0))
+.slice(0,3);
+if(!alts.length)
+return "Je n'ai pas d'autre produit de la même catégorie dans le catalogue actuellement chargé pour comparer.";
+return "Alternatives dans la même catégorie :\n"+
+alts.map(p=>`• ${p.name} — €${Number(p.price).toFixed(2)}${p.rating?(' ⭐'+p.rating):''}`).join('\n');
+}
+}
+
+// 8) Recherche générale dans le catalogue ("avez-vous...", "cherche...")
+let searchMatch=l.match(/(cherch\w*|trouv\w*|avez[- ]vous|vendez[- ]vous)\s+(.+)/);
+if(searchMatch){
+let term=searchMatch[2].trim();
+let hits=PRODUCTS.filter(p=>p.name.toLowerCase().includes(term)).slice(0,3);
+if(hits.length)
+return `J'ai trouvé ${hits.length} produit(s) : `+hits.map(p=>`${p.name} (€${Number(p.price).toFixed(2)})`).join(', ')+
+". Ouvrez la recherche pour voir tous les résultats.";
+return `Je n'ai rien trouvé pour "${term}" dans le catalogue actuellement chargé. Essayez la barre de recherche, ou inscrivez-vous pour être averti(e) quand ce sera disponible.`;
+}
+
+// 9) Repli général — sans jamais révéler qu'aucune IA générale
+// n'est connectée : on reste utile et positif sur ce qu'on peut faire.
+return "Je peux vous aider sur : ce produit (prix, note, description, comparaison), votre panier, la livraison, les moyens de paiement, une recherche dans le catalogue, un calcul rapide, ou l'heure/date. Sur quoi voulez-vous que je vous aide ?";
+
+}
+
+/* =====================================================
+   TOAST
+===================================================== */
+
+/* =====================================================
+   TRUST GATE
+===================================================== */
+
+let trustPending=null;
+let trustShownThisSession=false;
+
+function openTrustGate(action){
+
+if(trustShownThisSession){
+
+action();
+
+return;
+
+}
+
+trustPending=action;
+
+trustModal.classList.add('show');
+
+}
+
+function closeTrustGate(proceed){
+
+trustModal.classList.remove('show');
+
+if(proceed){
+
+trustShownThisSession=true;
+
+if(trustPending)
+trustPending();
+
+}
+
+trustPending=null;
+
+}
+
+function showToast(msg){
+
+const t=
+document.getElementById(
+'toast'
+);
+
+t.innerText=msg;
+
+t.classList.add('show');
+
+setTimeout(
+()=>t.classList.remove('show'),
+3500
+);
+
+}
+
+/* =====================================================
+   BANNER
+===================================================== */
+
+let bannerIndex=0;
+
+setInterval(()=>{
+
+const slides=
+document.querySelectorAll(
+'.banner-slide'
+);
+
+const dots=
+document.querySelectorAll(
+'.banner-dot'
+);
+
+slides.forEach(
+s=>s.classList.remove('active')
+);
+
+dots.forEach(
+d=>d.classList.remove('active')
+);
+
+bannerIndex=
+(bannerIndex+1)%slides.length;
+
+slides[bannerIndex]
+.classList.add('active');
+
+dots[bannerIndex]
+.classList.add('active');
+
+},5000);
+
+/* =====================================================
+   START
+===================================================== */
+
+window.addEventListener(
+'beforeunload',
+()=>{
+
+localStorage.setItem(
+'mercado_email',
+email.value||''
+);
+
+}
+);
+
+init();
+
+</script>
+
+</body>
+</html>
