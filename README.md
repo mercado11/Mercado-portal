@@ -1,44 +1,24 @@
+MERCADO - correctifs recherche, e-mail et bannieres
 
-# MERCADO — CJ Dropshipping
+Fichiers :
+- server.js : serveur Express avec recherches CJ élargies pour Nike/Jordan et messages d'erreur Resend plus explicites.
+- public/index.html : retire uniquement la première bannière CJ + MERCADO. Les deux autres diapositives (livraison gratuite et offre nouvel acheteur) restent et défilent.
+- package.json et .env.example : configuration du projet.
 
-## Structure du projet
+IMPORTANT POUR RESEND :
+Le code ne peut pas contourner les limites de Resend. onboarding@resend.dev est un expéditeur de test et ne permet généralement pas d'envoyer les codes à tous les clients. Dans Render > Environment :
+1. Garder RESEND_API_KEY avec une clé API valide.
+2. Ajouter/vérifier un domaine que vous possédez dans https://resend.com/domains et configurer les DNS demandés.
+3. Définir RESEND_FROM avec une adresse de ce domaine vérifié, par exemple MERCADO <support@votre-domaine.com> (remplacer par votre vrai domaine).
+4. Redéployer le service.
 
-- server.js : serveur Node.js / Express
-- package.json : dépendances et commandes
-- .env.example : modèle des variables d'environnement
-- .gitignore : fichiers à exclure de Git
-- public/index.html : site web MERCADO
-- public/mercado-cj-banner.png : image du bandeau CJ Dropshipping
+La recherche est élargie à plusieurs termes dans le catalogue CJ Dropshipping. Elle ne peut pas montrer des produits absents du catalogue CJ ou bloqués par les droits/paramètres de l'API. Le code n'invente pas de résultats.
 
-## Installation
+Déploiement : remplacer server.js et public/index.html dans le dépôt GitHub relié à Render, puis laisser Render redéployer. Ne jamais mettre RESEND_API_KEY dans les fichiers du site ni la partager.
 
-1. Installer Node.js 20 ou une version plus récente.
-2. Ouvrir un terminal dans le dossier du projet.
-3. Exécuter npm install.
-4. Configurer les variables d'environnement.
-5. Exécuter npm start.
-
-## Déploiement Render
-
-Build Command :
-npm install
-
-Start Command :
-npm start
-
-## Catalogue CJ Dropshipping
-
-Le catalogue est récupéré via le backend.
-La marge est configurable avec PRICE_MARKUP_USD.
-La valeur par défaut du modèle est de 5 USD.
-
-## Bandeau MERCADO
-
-Le site utilise une image promotionnelle CJ Dropshipping.
-La vidéo du bandeau a été retirée.
-Place l'image dans public/mercado-cj-banner.png.
-
-## Sécurité
-
-Ne publie jamais les clés API, mots de passe ou jetons dans GitHub.
-Teste le paiement en mode test avant de recevoir de vraies commandes.
+Mise à jour :
+- Le code de vérification par e-mail a été retiré du formulaire et du serveur.
+- Le client voit maintenant un court texte lui demandant de fournir des informations exactes.
+- Les étapes importantes sont enregistrées dans notifications.json et envoyées à Telegram si Telegram est configuré.
+- Endpoint admin pour consulter les notifications : GET /api/admin/notifications?limit=100 (protéger avec ADMIN_KEY).
+- Pour conserver notifications.json après redémarrage Render, configurez un disque persistant et DATA_DIR.
