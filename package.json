@@ -1,4 +1,3 @@
-
 {
   "name": "mercado-backend",
   "version": "1.0.0",
@@ -9,9 +8,7 @@
     "start": "node server.js",
     "check": "node --check server.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
