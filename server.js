@@ -167,31 +167,77 @@ async function getCatalog({cat='All', q='', limit=60, page=1}={}) {
   const key = `catalog:${cat}:${q}:${limit}:${page}`;
   const cached = productCache.get(key);
   if (cached && Date.now()-cached.at<CACHE_MS) return cached.data;
-  const term = q || (cat !== 'All' ? CATEGORY_KEYWORDS[cat] || cat : '');
-  const d = await cjRequest('/product/listV2', { keyWord:term, page, size:100, orderBy:1, sort:'desc', features:'enable_category' }, 50);
-  let rows = unwrapList(d);
-  if (!rows.length && d.data && Array.isArray(d.data.products)) rows = d.data.products;
+
+  // Some CJ searches return very few matches for the generic word "electronics".
+  // Broaden that category with common electronics search terms, then deduplicate.
+  const electronicsTerms = ['electronics','headphones','earbuds','smart watch','speaker','charger','power bank','keyboard','mouse','camera'];
+  // CJ searches the worldwide catalog by keyword. Brand searches are broadened with
+  // related product terms because suppliers may title the item by style/category.
+  // Keep the exact query first so exact matches win; never invent brand labels.
+  const queryText = String(q || '').trim().replace(/\s+/g, ' ');
+  const lowerQuery = queryText.toLowerCase();
+  let queryTerms = queryText ? [queryText] : [];
+  if (queryText && /\b(air\s*)?jordan\b/.test(lowerQuery)) {
+    queryTerms.push('Air Jordan', 'Jordan 1 shoes', 'Jordan sneakers', 'basketball sneakers', 'high top sneakers');
+  } else if (queryText && /\bnike\b/.test(lowerQuery)) {
+    queryTerms.push('Nike sneakers', 'Nike running shoes', 'Nike sports shoes', 'running shoes', 'sneakers');
+  } else if (queryText && /\b(sneaker|sneakers|trainer|trainers|shoe|shoes)\b/.test(lowerQuery)) {
+    queryTerms.push('sports shoes', 'running shoes', 'basketball sneakers');
+  }
+  // Search across CJ's supplier catalogue using several related terms; results remain limited to products returned by CJ.
+  const terms = q ? [...new Set(queryTerms)].slice(0, 6) : (cat === 'Electronics' ? electronicsTerms : [cat !== 'All' ? CATEGORY_KEYWORDS[cat] || cat : '']);
+  const rowsById = new Map();
+  for (const term of terms) {
+    try {
+      const d = await cjRequest('/product/listV2', { keyWord:term, page, size:100, orderBy:1, sort:'desc', features:'enable_category' }, 50);
+      let rows = unwrapList(d);
+      if (!rows.length && d.data && Array.isArray(d.data.products)) rows = d.data.products;
+      for (const p of rows) {
+        const id = String(p.pid || p.productId || p.id || p.productSku || '');
+        if (id && !rowsById.has(id)) rowsById.set(id, p);
+      }
+    } catch (err) {
+      // Keep usable results from other terms if one supplier search fails.
+    }
+  }
+
   const mapped = [];
-  for (const p of rows) {
+  for (const p of rowsById.values()) {
     if (!productStock(p)) continue;
     const item = await toMercadoProduct(p);
-    if (item) mapped.push(item);
+    if (!item) continue;
+    if (cat === 'Electronics' && !/electronic|headphone|earbud|audio|speaker|charger|power bank|keyboard|mouse|camera|computer|phone|tablet|watch|bluetooth|usb|projector|gaming|led/i.test(`${item.category} ${item.name} ${item.description}`)) continue;
+    mapped.push(item);
   }
-  // Use the same mixed-price selection for the home catalog and text search.
-  // Each product's customer price is supplier price + the fixed USD markup, converted for display.
+  // Use a mixed-price selection so the category contains more than a couple of products.
   const candidateCount = Math.min(mapped.length, Math.max(limit * 3, Number(process.env.MIN_PRODUCTS_PER_CATEGORY || 60)));
   const popularPool = mapped.sort((a,b) => (b.sold-a.sold) || (b.supplierPriceUSD-a.supplierPriceUSD)).slice(0, candidateCount);
-  const result = mixPriceRanges(popularPool, limit);
+  let result = mixPriceRanges(popularPool, limit);
+  if (q) {
+    const wanted = lowerQuery.split(/[^a-z0-9]+/).filter(Boolean);
+    const score = item => {
+      const name = String(item.name || '').toLowerCase();
+      const haystack = `${name} ${item.category || ''} ${item.description || ''}`.toLowerCase();
+      let points = wanted.reduce((sum, word) => sum + (haystack.includes(word) ? 4 : 0), 0);
+      if (/\b(jordan|nike)\b/.test(lowerQuery) && /\b(jordan|nike)\b/.test(name)) points += 12;
+      if (/\b(jordan|nike)\b/.test(lowerQuery) && /sneaker|basketball|running shoe|sports shoe/.test(haystack)) points += 2;
+      return points;
+    };
+    result.sort((a,b) => score(b)-score(a) || (b.sold-a.sold));
+  }
   productCache.set(key, {at:Date.now(), data:result});
   return result;
 }
 function ratesBaseEUR() { return readJson(RATE_CACHE_FILE, null); }
+let lastMailError = null;
 async function sendEmail(to, subject, html, textBody='') {
-  if (!process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY missing');
+  if (!process.env.RESEND_API_KEY) { lastMailError = 'RESEND_API_KEY missing'; throw new Error(lastMailError); }
   const from = process.env.RESEND_FROM || 'MERCADO <onboarding@resend.dev>';
+  if (from.toLowerCase().includes('onboarding@resend.dev')) console.warn('MERCADO email: onboarding@resend.dev is for Resend testing and may only deliver to the account owner; set RESEND_FROM to an address on a verified domain for customers.');
   const r = await fetch('https://api.resend.com/emails', { method:'POST', headers:{ Authorization:`Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type':'application/json' }, body:JSON.stringify({ from, to:[to], subject, html, text:textBody || html.replace(/<[^>]*>/g,' ') }) });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok || d.error) throw new Error(d.message || d.error?.message || `Resend HTTP ${r.status}`);
+  if (!r.ok || d.error) { lastMailError = String(d.message || d.error?.message || d.error || `Resend HTTP ${r.status}`); console.error('MERCADO Resend API error:', r.status, lastMailError); throw new Error(lastMailError); }
+  lastMailError = null;
   return d;
 }
 async function telegram(text) {
@@ -205,8 +251,33 @@ const ordersFile = 'orders.json';
 function orderList() { return readJson(ordersFile, []); }
 function saveOrder(o) { const list = orderList(); const i = list.findIndex(x => x.orderId === o.orderId); if (i >= 0) list[i] = {...list[i], ...o}; else list.push(o); writeJson(ordersFile, list.slice(-2000)); }
 function formatOrderMessage(o, test=false) {
-  const lines = [test || process.env.CAMERPAY_MODE === 'test' ? '🧪 TEST (ne pas commander chez CJ)' : '🛒 NOUVELLE COMMANDE MERCADO', `Commande: ${o.orderId}`, `Statut: ${o.status || 'en attente de paiement'}`, `Client: ${o.customer?.name || ''}`, `Email: ${o.customer?.email || ''}`, `Téléphone: ${o.customer?.phone || ''}`, `Adresse: ${o.customer?.address || ''} ${o.customer?.city || ''} ${o.customer?.country || ''}`, `Total estimé: ${o.totalEUR || o.total || 0} EUR`, 'Produits:'];
+  const lines = [test || process.env.CAMERPAY_MODE === 'test' ? '🧪 TEST (ne pas commander chez CJ)' : '🛒 NOUVELLE COMMANDE MERCADO', `Commande: ${o.orderId}`, `Statut: ${o.status || 'en attente de paiement'}`, `Client: ${o.customer?.name || ''}`, `Email: ${o.customer?.email || ''}`, `Téléphone: ${o.customer?.phone || ''}`, o.customer?.alternatePhone ? `Téléphone secondaire: ${o.customer.alternatePhone}` : '', `Adresse: ${o.customer?.address || ''}`, `Quartier: ${o.customer?.neighborhood || ''}`, `Ville: ${o.customer?.city || ''}`, `Repère: ${o.customer?.landmark || ''}`, `Code postal: ${o.customer?.zip || ''}`, `Pays: ${o.customer?.country || ''}`, o.customer?.recipientName ? `Destinataire: ${o.customer.recipientName}` : '', o.customer?.deliveryInstructions ? `Instructions livraison: ${o.customer.deliveryInstructions}` : '', `Total estimé: ${o.totalEUR || o.total || 0} EUR`, 'Produits:'].filter(Boolean);
   for (const it of o.items || []) lines.push(`• ${it.name || it.id} × ${it.qty || 1}\n  CJ pid: ${it.id}\n  Lien CJ: ${it.itemUrl || it.url || `https://cjdropshipping.com/product/${encodeURIComponent(it.id)}.html`}`);
+  return lines.join('\n');
+}
+
+const progressStages = new Set([
+  'customer_info_submitted','payment_started','payment_redirected',
+  'payment_unavailable_request_saved','payment_failed','order_created',
+  'payment_paid','payment_cancelled','delivery_updated'
+]);
+function recordProgress(event) {
+  const events = readJson('notifications.json', []);
+  events.push({...event, at:new Date().toISOString()});
+  writeJson('notifications.json', events.slice(-5000));
+}
+function progressMessage(event) {
+  const c = event.customer || {};
+  const labels = {
+    customer_info_submitted:'📝 INFORMATIONS CLIENT SAISIES',
+    payment_started:'💳 PAIEMENT COMMENCÉ',
+    payment_redirected:'🔗 CLIENT REDIRIGÉ VERS LE PAIEMENT',
+    payment_unavailable_request_saved:'⏳ DEMANDE ENREGISTRÉE — PAIEMENT INDISPONIBLE',
+    payment_failed:'❌ ÉCHEC DU PAIEMENT', order_created:'🛒 COMMANDE ENREGISTRÉE',
+    payment_paid:'✅ PAIEMENT CONFIRMÉ', payment_cancelled:'↩️ PAIEMENT ANNULÉ',
+    delivery_updated:'🚚 MISE À JOUR DE LIVRAISON'
+  };
+  const lines = [labels[event.stage] || '🔔 PROGRESSION MERCADO', `Étape: ${event.stage}`, event.orderId ? `Commande: ${event.orderId}` : '', c.name ? `Client: ${c.name}` : '', c.email ? `Email: ${c.email}` : '', c.phone ? `Téléphone: ${c.phone}` : '', c.alternatePhone ? `Téléphone secondaire: ${c.alternatePhone}` : '', c.address ? `Adresse: ${c.address}` : '', c.neighborhood ? `Quartier: ${c.neighborhood}` : '', c.city ? `Ville: ${c.city}` : '', c.landmark ? `Repère: ${c.landmark}` : '', c.country ? `Pays: ${c.country}` : '', c.recipientName ? `Destinataire: ${c.recipientName}` : '', c.deliveryInstructions ? `Instructions livraison: ${c.deliveryInstructions}` : '', event.extra?.paymentMethod ? `Paiement: ${event.extra.paymentMethod}` : '', event.extra?.itemCount ? `Articles: ${event.extra.itemCount}` : '', event.extra?.providerStatus ? `Statut fournisseur: ${event.extra.providerStatus}` : ''].filter(Boolean);
   return lines.join('\n');
 }
 
@@ -230,15 +301,30 @@ app.get('/api/catalog/item', async (req,res) => {
 app.get('/api/catalog/cj/product/:id', async (req,res) => { try { const d=await cjRequest('/product/query',{pid:String(req.params.id)},10); const p=d.data?.[0] || d.data?.product || d.data || d; const item=await toMercadoProduct(p); if(!item) return res.status(404).json({error:'Produit indisponible'}); res.json({...item,desc:p.description||p.descriptionEn||item.description}); } catch { res.status(503).json({error:'Détails CJ indisponibles'}); } });
 app.get('/api/catalog/cj/variants/:id', async (req,res) => { try { const d=await cjRequest('/product/variant/query',{pid:String(req.params.id)},10); res.json({ok:true,data:d.data||d}); } catch { res.status(503).json({error:'Variantes CJ indisponibles ou endpoint non activé sur ce compte'}); } });
 app.get('/api/catalog/cj/stock/:id', async (req,res) => { try { const d=await cjRequest('/product/stock/getInventoryByPid',{pid:String(req.params.id)},10); res.json({ok:true,data:d.data||d}); } catch { res.status(503).json({error:'Stock CJ indisponible; vérifiez le paramètre pid et les droits API'}); } });
-app.post('/api/email/send', async (req,res) => {
-  const email=String(req.body.email||'').trim().toLowerCase(); if(!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({error:'Adresse email invalide'});
-  if(!process.env.RESEND_API_KEY) return res.status(503).json({error:'Service email non configuré'});
-  const codes=readJson('verification-codes.json',{}); const code=String(crypto.randomInt(1000,10000)); codes[email]={code, expires:Date.now()+10*60*1000, verified:false}; writeJson('verification-codes.json',codes);
-  try { const result=await sendEmail(email,'Votre code de vérification MERCADO',`<p>Votre code MERCADO est :</p><h1 style="letter-spacing:6px">${code}</h1><p>Il expire dans 10 minutes.</p>`,`Votre code MERCADO est ${code}. Il expire dans 10 minutes.`); res.json({ok:true, accepted:true, id:result.id, message:'Resend a accepté la demande. La livraison doit être confirmée dans le tableau de bord Resend.'}); }
-  catch(e) { delete codes[email]; writeJson('verification-codes.json',codes); res.status(502).json({error:'Resend n’a pas accepté le message. Vérifiez la clé API, l’expéditeur et les logs Resend.'}); }
+// Email-code verification removed: checkout no longer depends on Resend.
+app.get('/api/admin/test-email', admin, async (req,res) => { try { const to=String(req.query.to||'delivered@resend.dev'); const d=await sendEmail(to,'Test MERCADO / Resend',`<p>Test Resend réussi côté API.</p><p>Vérifiez l’événement de livraison dans Resend.</p>`); res.json({ok:true,id:d.id,to,notice:'Accepted by Resend is not the same as delivered.'}); } catch(e) { res.status(502).json({ok:false,error:'Resend test failed',details:e.message}); } });
+app.get('/api/admin/notifications', admin, (req,res) => {
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+  const all = readJson('notifications.json', []);
+  res.json({ok:true,total:all.length,notifications:all.slice(-limit).reverse()});
 });
-app.post('/api/email/verify', (req,res) => { const email=String(req.body.email||'').trim().toLowerCase(); const code=String(req.body.code||''); const codes=readJson('verification-codes.json',{}); const entry=codes[email]; if(!entry||entry.expires<Date.now()||!safeEq(entry.code,code)) return res.status(400).json({ok:false,error:'Code invalide ou expiré'}); entry.verified=true; entry.verifiedAt=Date.now(); codes[email]=entry; writeJson('verification-codes.json',codes); res.json({ok:true,verified:true}); });
-app.get('/api/admin/test-email', admin, async (req,res) => { try { const to=String(req.query.to||'delivered@resend.dev'); const d=await sendEmail(to,'Test MERCADO / Resend',`<p>Test Resend réussi côté API.</p><p>Vérifiez l’événement de livraison dans Resend.</p>`); res.json({ok:true,id:d.id,to,notice:'Accepted by Resend is not the same as delivered.'}); } catch(e) { res.status(502).json({ok:false,error:'Resend test failed'}); } });
+app.post('/api/progress', async (req,res) => {
+  const b = req.body || {};
+  const stage = String(b.stage || '');
+  if (!progressStages.has(stage)) return res.status(400).json({ok:false,error:'Étape de progression invalide'});
+  const customerIn = b.customer && typeof b.customer === 'object' ? b.customer : {};
+  const clean = v => String(v || '').trim().slice(0, 300);
+  const event = {
+    stage,
+    orderId: clean(b.orderId),
+    customer: {name:clean(customerIn.name), email:clean(customerIn.email), phone:clean(customerIn.phone), alternatePhone:clean(customerIn.alternatePhone), address:clean(customerIn.address), neighborhood:clean(customerIn.neighborhood), landmark:clean(customerIn.landmark), city:clean(customerIn.city), zip:clean(customerIn.zip), recipientName:clean(customerIn.recipientName), deliveryInstructions:clean(customerIn.deliveryInstructions), country:clean(customerIn.country)},
+    extra: b.extra && typeof b.extra === 'object' ? {step:clean(b.extra.step),paymentMethod:clean(b.extra.paymentMethod),itemCount:Number(b.extra.itemCount)||undefined,providerStatus:clean(b.extra.providerStatus),addressEntered:!!b.extra.addressEntered} : {}
+  };
+  recordProgress(event);
+  telegram(progressMessage(event)).catch(() => {});
+  res.json({ok:true,saved:true});
+});
+
 app.post('/api/order', async (req,res) => {
   const body=req.body||{}; if(!body.orderId || !Array.isArray(body.items)||!body.items.length) return res.status(400).json({error:'Commande invalide'});
   const previouslySaved = orderList().some(x => x.orderId === String(body.orderId));
@@ -247,7 +333,10 @@ app.post('/api/order', async (req,res) => {
     for(const it of body.items) { const id=String(it.id||''); if(!id) throw new Error('Invalid product'); const d=await cjRequest('/product/query',{pid:id},10); const p=d.data?.[0] || d.data?.product || d.data || d; const price=(productPriceUSD(p)+MARKUP)*await eurRate(); const qty=Math.max(1,Math.min(50,Math.floor(Number(it.qty)||1))); totalEUR += price*qty; items.push({id,name:p.productNameEn||p.nameEn||it.name||id,qty,priceEUR:Number(price.toFixed(2)),itemUrl:cjProductUrl(p)}); }
   } catch { return res.status(503).json({error:'Impossible de recalculer les prix CJ. La commande n’a pas été validée.'}); }
   const o={orderId:String(body.orderId),items,customer:body.customer||{},paymentMethod:body.paymentMethod||'',totalEUR:Number(totalEUR.toFixed(2)),status:'pending',createdAt:new Date().toISOString(),note:body.note||''}; saveOrder(o);
-  if(!previouslySaved) { try { await telegram(formatOrderMessage(o)); } catch(e) { /* order is stored even if Telegram is unavailable */ } }
+  if(!previouslySaved) {
+    recordProgress({stage:'order_created',orderId:o.orderId,customer:o.customer,extra:{paymentMethod:o.paymentMethod,itemCount:o.items.length}});
+    try { await telegram(formatOrderMessage(o)); } catch(e) { /* order is stored even if Telegram is unavailable */ }
+  }
   res.json({ok:true,orderId:o.orderId,totalEUR:o.totalEUR,status:o.status});
 });
 async function camerpayPaymentHandler(req,res) {
@@ -284,6 +373,7 @@ app.post('/api/payment/camerpay/webhook', (req,res) => {
   else if(['failed','cancelled','refunded'].includes(status)) o.status=status;
   o.transactionUuid=uuid||o.transactionUuid; orders[idx]=o; writeJson(ordersFile,orders);
   if(status==='completed' && !wasAlreadyPaid) {
+    recordProgress({stage:'payment_paid',orderId:o.orderId,customer:o.customer,extra:{paymentMethod:o.paymentMethod,providerStatus:status}});
     telegram(formatOrderMessage(o,false).replace('Statut: paid','Statut: PAYE')).catch(()=>{});
     if(o.customer?.email) sendEmail(o.customer.email,'Confirmation de commande MERCADO',`<p>Bonjour ${String(o.customer.name||'').replace(/[<>]/g,'')},</p><p>Votre paiement pour la commande ${o.orderId} a été confirmé.</p><p>Total payé : ${o.totalXAF} XAF.</p>`).catch(()=>{});
   }
@@ -300,6 +390,7 @@ app.get('/api/payment/camerpay/status', async (req,res) => {
       const latest=orderList().find(x=>x.orderId===orderId);
       if(latest?.status!=='paid') {
         o.status='paid'; o.paidAt=o.paidAt||new Date().toISOString(); saveOrder(o);
+        recordProgress({stage:'payment_paid',orderId:o.orderId,customer:o.customer,extra:{paymentMethod:o.paymentMethod,providerStatus:'completed'}});
         telegram(formatOrderMessage(o,false).replace('Statut: paid','Statut: PAYE')).catch(()=>{});
         if(o.customer?.email) sendEmail(o.customer.email,'Confirmation de commande MERCADO',`<p>Bonjour ${String(o.customer.name||'').replace(/[<>]/g,'')},</p><p>Votre paiement pour la commande ${o.orderId} a été confirmé.</p><p>Total payé : ${o.totalXAF} XAF.</p>`).catch(()=>{});
       }
@@ -358,10 +449,10 @@ app.post('/api/ai', async (req,res)=>{
 app.post('/api/ai-log', (req,res)=>res.json({ok:true}));
 app.get('/api/admin/cj/status', admin, (req,res)=>{ resetPointsIfNeeded(); res.json({ok:true,tokenPresent:!!cjToken||!!process.env.CJ_ACCESS_TOKEN,apiKeyPresent:!!process.env.CJ_API_KEY,pointsDate:cjPoints.date,pointsUsed:cjPoints.used,pointsLimit:POINT_LIMIT,cacheEntries:productCache.size}); });
 app.get('/api/admin/cj/raw', admin, async (req,res)=>{ try { const d=await cjRequest('/product/listV2',{keyWord:String(req.query.q||''),page:1,size:10,orderBy:1,sort:'desc',features:'enable_category'},50); res.json(d); } catch { res.status(502).json({error:'CJ request failed'}); } });
-app.get('/api/admin/diagnostics', admin, (req,res)=>res.json({ok:true,env:{cjApiKey:!!process.env.CJ_API_KEY,cjAccessToken:!!cjToken,camerpayToken:!!process.env.CAMERPAY_TOKEN,camerpayCallbackSecret:!!process.env.CAMERPAY_CALLBACK_SECRET,resendApiKey:!!process.env.RESEND_API_KEY,telegramBotToken:!!process.env.TELEGRAM_BOT_TOKEN,telegramChatId:!!process.env.TELEGRAM_CHAT_ID,anthropicApiKey:!!process.env.ANTHROPIC_API_KEY},dataDir:DATA_DIR}));
+app.get('/api/admin/diagnostics', admin, (req,res)=>res.json({ok:true,env:{cjApiKey:!!process.env.CJ_API_KEY,cjAccessToken:!!cjToken,camerpayToken:!!process.env.CAMERPAY_TOKEN,camerpayCallbackSecret:!!process.env.CAMERPAY_CALLBACK_SECRET,resendApiKey:!!process.env.RESEND_API_KEY,resendFrom:process.env.RESEND_FROM||'MERCADO <onboarding@resend.dev>',resendUsesTestSender:!process.env.RESEND_FROM||process.env.RESEND_FROM.toLowerCase().includes('onboarding@resend.dev'),telegramBotToken:!!process.env.TELEGRAM_BOT_TOKEN,telegramChatId:!!process.env.TELEGRAM_CHAT_ID,anthropicApiKey:!!process.env.ANTHROPIC_API_KEY},lastMailError,dataDir:DATA_DIR}));
 app.get('/api/admin/test-telegram', admin, async (req,res)=>{ try { await telegram('✅ Test MERCADO Telegram : connexion opérationnelle.'); res.json({ok:true}); } catch { res.status(502).json({ok:false,error:'Telegram test failed'}); } });
 app.get('/api/admin/test-camerpay', admin, async (req,res)=>{ if(!process.env.CAMERPAY_TOKEN) return res.status(503).json({ok:false,error:'CAMERPAY_TOKEN manquant'}); res.json({ok:true,tokenConfigured:true,baseUrl:process.env.CAMERPAY_BASE_URL||'https://camerpay.biz/api',initiatePath:process.env.CAMERPAY_INITIATE_PATH||'/payment/initiate',statusPath:process.env.CAMERPAY_STATUS_PATH||'/payment/{id}/status',note:'Le test de connexion réel nécessite une transaction sandbox autorisée par CamerPay.'}); });
-app.get('/api/admin/test-resend', admin, async (req,res)=>{ try { const d=await sendEmail(String(req.query.to||'delivered@resend.dev'),'Test MERCADO Resend', '<p>Test de livraison Resend.</p>'); res.json({ok:true,id:d.id,to:req.query.to||'delivered@resend.dev',note:'Vérifiez Resend > Emails pour l’état delivered/bounced.'}); } catch { res.status(502).json({ok:false,error:'Resend test failed'}); } });
+app.get('/api/admin/test-resend', admin, async (req,res)=>{ try { const d=await sendEmail(String(req.query.to||'delivered@resend.dev'),'Test MERCADO Resend', '<p>Test de livraison Resend.</p>'); res.json({ok:true,id:d.id,to:req.query.to||'delivered@resend.dev',note:'Vérifiez Resend > Emails pour l’état delivered/bounced.'}); } catch(e) { res.status(502).json({ok:false,error:'Resend test failed',details:e.message}); } });
 
 app.get('*', (req,res) => res.sendFile(path.join(PUBLIC_DIR,'index.html')));
 app.listen(PORT, () => console.log(`MERCADO server listening on ${PORT}`));
